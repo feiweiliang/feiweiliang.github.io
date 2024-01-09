@@ -4,6 +4,37 @@
   
     
     <entry>
+      <title>/images/通过Sanitizer让CodeQL查询到正确的path</title>
+      <link href="/2024/01/08/%E9%80%9A%E8%BF%87Sanitizer%E8%AE%A9CodeQL%E6%9F%A5%E8%AF%A2%E5%88%B0%E6%AD%A3%E7%A1%AE%E7%9A%84path/"/>
+      <url>/2024/01/08/%E9%80%9A%E8%BF%87Sanitizer%E8%AE%A9CodeQL%E6%9F%A5%E8%AF%A2%E5%88%B0%E6%AD%A3%E7%A1%AE%E7%9A%84path/</url>
+      
+        <content type="html"><![CDATA[<h1 id="一、问题描述"><a href="#一、问题描述" class="headerlink" title="一、问题描述"></a>一、问题描述</h1><p>大家在使用CodeQL复现历史漏洞时，可能经常会碰到查询出来的Path和实际执行的不一致的问题，例如：</p><p>在复现Log4j2 RCE漏洞时，我们debug实际执行的路径是这样的：</p><p><img src="/images/%E9%80%9A%E8%BF%87Sanitizer%E8%AE%A9CodeQL%E6%9F%A5%E8%AF%A2%E5%88%B0%E6%AD%A3%E7%A1%AE%E7%9A%84path.assets/image-20240108155725393.png" alt="image-20240108155725393"></p><p>但是在CodeQL查询出这样一条Path</p><p><img src="/images/%E9%80%9A%E8%BF%87Sanitizer%E8%AE%A9CodeQL%E6%9F%A5%E8%AF%A2%E5%88%B0%E6%AD%A3%E7%A1%AE%E7%9A%84path.assets/image-20240108155836737.png" alt="image-20240108155836737"></p><p>实际执行时调用的是<code>DefaultReliabilityStrategy</code>类的<code>log</code>方法，但是查询结果中却是<code>AwaitCompletionReliabilityStrategy</code>类的</p><h1 id="二、问题分析"><a href="#二、问题分析" class="headerlink" title="二、问题分析"></a>二、问题分析</h1><p>通过观察源码</p><p><img src="/images/%E9%80%9A%E8%BF%87Sanitizer%E8%AE%A9CodeQL%E6%9F%A5%E8%AF%A2%E5%88%B0%E6%AD%A3%E7%A1%AE%E7%9A%84path.assets/image-20240108160258349.png" alt="image-20240108160258349"></p><p><img src="/images/%E9%80%9A%E8%BF%87Sanitizer%E8%AE%A9CodeQL%E6%9F%A5%E8%AF%A2%E5%88%B0%E6%AD%A3%E7%A1%AE%E7%9A%84path.assets/image-20240108160324163.png" alt="image-20240108160324163"></p><p>我们发现这两个类都实现了<code>LocationAwareReliabilityStrategy</code>接口</p><p>所以在分析以下代码时：</p><figure class="highlight java"><table><tr><td class="gutter"><pre><span class="line">1</span><br></pre></td><td class="code"><pre><span class="line">((LocationAwareReliabilityStrategy) strategy).log(<span class="built_in">this</span>, getName(), fqcn, location, marker, level, message, throwable)</span><br></pre></td></tr></table></figure><p>CodeQL不能确定此处实际使用的是哪个实现了<code>LocationAwareReliabilityStrategy</code>接口的实现类，所以数据流会传播到<code>LocationAwareReliabilityStrategy</code>接口的每一个实现类，这样会造成一个时间的问题。CodeQL对此做了一些优化，通过降低精度来提升了速度。</p><p>详细的原因在大佬在这篇文章中说明：<a href="https://tttang.com/archive/1570/#toc_0x03">CodeQL能找到log4shell(CVE-2021-44228)漏洞吗？ - 跳跳糖 (tttang.com)</a></p><p>但是大佬没说怎么解决</p><h1 id="三、问题解决"><a href="#三、问题解决" class="headerlink" title="三、问题解决"></a>三、问题解决</h1><p>经过探究，我认为既然已经知道实际执行不到这些类，我们可以写一个清洗器(Sanitizer)，将实际执行不到的清洗掉。</p><p>例如，针对以上问题，我们可以写下面这样的清洗器：</p><figure class="highlight java"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br></pre></td><td class="code"><pre><span class="line">override predicate <span class="title function_">isSanitizer</span><span class="params">(DataFlow::Node node)</span> &#123; </span><br><span class="line">    exists(Callable ca|</span><br><span class="line">           <span class="comment">//当节点为ca的任意参数时，中断数据流</span></span><br><span class="line">           node.asParameter() = ca.getAParameter() and</span><br><span class="line">           <span class="comment">//限定ca为AwaitCompletionReliabilityStrategy类的log方法</span></span><br><span class="line">           ca.getDeclaringType().getASubtype*().hasQualifiedName(<span class="string">&quot;org.apache.logging.log4j.core.config&quot;</span>, <span class="string">&quot;AwaitCompletionReliabilityStrategy&quot;</span>) and</span><br><span class="line">            ca.hasName(<span class="string">&quot;log&quot;</span>) )</span><br></pre></td></tr></table></figure><p>这样，我们就能清洗掉实际执行不到的类</p><p><img src="/images/%E9%80%9A%E8%BF%87Sanitizer%E8%AE%A9CodeQL%E6%9F%A5%E8%AF%A2%E5%88%B0%E6%AD%A3%E7%A1%AE%E7%9A%84path.assets/image-20240108161203168.png" alt="image-20240108161203168"></p><blockquote><p>另外，在查找解决问题的资料时发现一个CodeQL团队的回答，也对我们有些帮助</p></blockquote><p><a href="https://github.com/github/codeql/issues/7449">https://github.com/github/codeql/issues/7449</a></p><p><img src="/images/%E9%80%9A%E8%BF%87Sanitizer%E8%AE%A9CodeQL%E6%9F%A5%E8%AF%A2%E5%88%B0%E6%AD%A3%E7%A1%AE%E7%9A%84path.assets/image-20240108161449681.png" alt="image-20240108161449681"></p>]]></content>
+      
+      
+      <categories>
+          
+          <category> 代码审计 </category>
+          
+      </categories>
+      
+      
+        <tags>
+            
+            <tag> java安全 </tag>
+            
+            <tag> 代码审计 </tag>
+            
+            <tag> CodeQL </tag>
+            
+            <tag> 污点分析 </tag>
+            
+        </tags>
+      
+    </entry>
+    
+    
+    
+    <entry>
       <title>从Java Agent到内存马</title>
       <link href="/2023/05/26/%E4%BB%8EJava%20Agent%E5%88%B0%E5%86%85%E5%AD%98%E9%A9%AC/"/>
       <url>/2023/05/26/%E4%BB%8EJava%20Agent%E5%88%B0%E5%86%85%E5%AD%98%E9%A9%AC/</url>
