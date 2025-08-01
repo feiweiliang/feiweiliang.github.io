@@ -11,6 +11,7 @@ $(document).ready(function(e){
 function show_date_time(){
 // $('.framework-info').html('小破站已经安全运行<span id="span_dt_dt" style="color: #fff;"></span>');
 $('.framework-info').html('<font size=4px; >一 路 行 至 此 ， 诗 书 趁 年 华 </font>');
+$('.framework-info').html('<font size=1px; >京公网安备11010502057283号 </font>');
 // window.setTimeout("show_date_time()", 1000);
 // BirthDay=new Date("3/5/2022 0:0:0");
 // today=new Date();
